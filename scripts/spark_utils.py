@@ -16,7 +16,8 @@ from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 
 #: Columns cast to 32-bit integers during normalisation.
-_INT_COLUMNS = ("vendorid", "pulocationid", "dolocationid", "payment_type")
+_INT_COLUMNS = ("vendorid", "pulocationid", "dolocationid", "payment_type",
+                "passenger_count", "ratecodeid")
 
 #: Columns cast to double during normalisation.
 _DOUBLE_COLUMNS = ("airport_fee", "congestion_surcharge")
