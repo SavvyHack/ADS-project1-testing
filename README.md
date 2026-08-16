@@ -63,9 +63,16 @@ Execute in order. Each notebook reads the previous stage's output.
 
 | Order | Notebook | Purpose | Reads | Writes |
 |-------|----------|---------|-------|--------|
-| 1 | `notebooks/1_preprocessing.ipynb` | Filtering, joins, feature construction | `data/landing/` | `data/raw/`, `data/curated/` |
-| 2 | `notebooks/2_analysis.ipynb` | Distributions, outliers, geospatial visualisation | `data/curated/` | `plots/` |
-| 3 | `notebooks/3_modelling.ipynb` | Poisson GLM and gradient-boosted trees | `data/curated/` | `models/`, `plots/` |
+| 1 | `notebooks/2a_preprocess_taxi.ipynb` | Business-rule filtering of all 58.6M trips, then aggregation of the JFK and LGA subset to airport-hours | `data/landing/tlc/` | `data/raw/trips_clean.parquet`, `data/curated/taxi_airport_hourly.parquet` |
+| 2 | `notebooks/2b_preprocess_flights.ipynb` | New York local arrival hour, then aggregation to the same airport-hour grid | `data/landing/bts/` | `data/curated/flights_hourly.parquet`, `data/curated/flights_hourly_ewr.parquet` |
+| 3 | `notebooks/2c_join_features.ipynb` | Join on the airport-hour key, temporal, holiday, and lag features, train/test split | `data/curated/` | `data/curated/model_table.parquet` |
+| 4 | `notebooks/3_analysis.ipynb` | Distributions, outliers, geospatial visualisation | `data/raw/`, `data/curated/` | `plots/` |
+| 5 | `notebooks/4_modelling.ipynb` | Poisson GLM and gradient-boosted trees | `data/curated/` | `models/`, `plots/` |
+
+All four curated tables share one key: `(date, hour, airport)` for JFK and LGA, 547 days
+× 24 hours × 2 airports = **26,256 rows**. Table A carries it as
+`(pickup_date, pickup_hour, airport)`; notebook 2c renames those two columns on load. Any
+join that changes the row count is a bug, and 2c asserts the count after each one.
 
 Notebooks import shared helpers from `scripts/spark_utils.py` via
 `sys.path.append("../scripts")`.
@@ -127,20 +134,57 @@ addressed in `scripts/spark_utils.py` or `notebooks/1_preprocessing.ipynb`.
   `CRSArrTime < CRSDepTime` arrive on the following calendar day and are
   shifted forward before being bucketed into an hour.
 - `ArrTime` is null for 1.42% of rows, corresponding to cancelled flights.
+- Each month is written by pandas, which infers dtypes per file. A month with no
+  cancellations stores `Cancelled` as an integer where every other month stores a
+  float, and `ArrTime` and `ArrDelayMinutes` drift the same way. `normalise_bts_schema`
+  fixes the widths before union.
+- The three clock corrections in `add_arrival_key` are **order-dependent**: `2400 → 0`
+  must precede the overnight date shift, or a red-eye scheduled to arrive at `2400`
+  is recorded as landing at midnight at the *start* of its departure day. See notebook
+  2b, Step 2.
+- Cancelled flights are retained in the scheduled series, since a cancellation is
+  visible on the arrivals board, and excluded from the realised series along with
+  diversions.
+- December 2022 is outside the download range, so flights that departed on 31 December
+  and landed on 1 January 2023 are absent and the first hours of the window under-count
+  arrivals. Notebook 2b measures the mirror case at the closing end and reports it.
 
 ## Preprocessing summary
 
 Record counts at each stage, mirroring the table in the report.
 
+**TLC trip records** (`data/curated/preprocessing_counts_taxi.csv`)
+
 | Step | Rows | Removed | Justification |
 |------|------|---------|---------------|
 | Raw TLC ingest | 58,642,319 | — | 18 monthly files, Jan 2023 – Jun 2024 |
-| Timestamp range filter | | | Records outside the stated window |
-| Airport zone filter | | | `PULocationID` in {132, 138} |
-| Invalid fare removal | | | See report §2 |
-| Raw BTS ingest | 1,277,944 | — | Post-download filter to JFK, LGA, EWR |
-| Arrival subset | | | `Dest` in {JFK, LGA} |
-| Joined to flight data | | | |
+| Pickup within study window | 58,642,192 | 127 | Meter and upload errors timestamped outside the file's own month |
+| Drop-off after pickup | 58,620,446 | 21,746 | A trip cannot end before it starts |
+| Duration between 1 min and 6 h | 57,922,347 | 698,099 | Sub-minute records are meter mis-taps; multi-hour records are meters left running |
+| Positive trip distance | 57,243,639 | 678,708 | Zero distance means no journey took place |
+| Positive fare and total | 56,642,200 | 601,439 | Negative amounts are voided transactions and chargebacks |
+| Metered fare at or above initial charge | 56,592,091 | 50,109 | Below the published initial charge on Rate Code 1 |
+| Implied speed below 80 mph | 56,588,396 | 3,695 | Not attainable across the five boroughs; corrupt odometer or timestamp |
+| Documented rate code | 53,451,022 | 3,137,374 | Data dictionary defines codes 1–6; code 99 is undocumented |
+| Documented payment type | 53,451,022 | 0 | Data dictionary defines codes 1–6 |
+
+Of the cleaned 53,451,022 trips, **4,637,237** (8.68%) are airport pickups: 2,746,141 at
+JFK and 1,891,096 at LaGuardia. These aggregate to 25,009 non-empty airport-hours, which
+the manufactured spine completes to 26,256; 1,242 of the remainder are genuine
+zero-pickup hours and 6 are daylight-saving artefacts, flagged rather than deleted.
+
+The zone filter is validated independently of the lookup table: 96.19% of the 2,019,422
+Rate Code 2 (JFK flat fare) trips touch zone 132 at one end, and the rate code is entered
+at the meter rather than derived from GPS.
+
+**BTS on-time performance** (`data/curated/preprocessing_counts_flights.csv`)
+
+| Step | Rows | Removed | Justification |
+|------|------|---------|---------------|
+| Raw BTS ingest | 1,277,944 | — | Post-download filter to flights touching JFK, LGA, EWR |
+| Arrival at JFK or LGA | | | Only arrivals generate pickups, and the filter guarantees the clock fields are New York local |
+| Well-formed scheduled clock fields | | | `hhmm` readings outside [0, 2400] or with a minute component of 60+ cannot be bucketed |
+| Scheduled arrival within study window | | | Applied after the overnight shift, so arrival date rather than departure date decides |
 
 ## Notes and known limitations
 
