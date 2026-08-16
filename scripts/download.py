@@ -521,7 +521,13 @@ def download_weather_sites(
             ).agg({**{column: "mean" for column in WEATHER_COLUMNS},
                    "observed_at": "min"})
 
-        frame.to_parquet(parquet_path, index=False)
+        frame.to_parquet(
+            parquet_path,
+            index=False,
+            engine="pyarrow",
+            coerce_timestamps="us",
+            allow_truncated_timestamps=True,
+        )
 
         expected_hours = int((finish - begin).total_seconds() // 3600)
         null_rates = {
