@@ -5,7 +5,8 @@ Pulls four sources in a single pass:
 1. NYC TLC Yellow Taxi trip records (monthly PARQUET).
 2. TLC taxi zone lookup table and zone shapefile.
 3. BTS Reporting Carrier On-Time Performance (monthly ZIP), filtered down to
-   flights touching the NYC airports before being written to disk.
+   flights touching the NYC airports before being written to disk. One extra
+   month is fetched ahead of ``--start``; see ``bts_start_month``.
 4. Meteostat hourly weather observations for each NYC airport and for Central
    Park, retrieved via the Meteostat bulk interface rather than over HTTP.
 
@@ -349,6 +350,34 @@ def download_bts_months(
             shutil.rmtree(work_dir, ignore_errors=True)
 
 
+def bts_start_month(start: str) -> str:
+    """Return the month preceding ``start``.
+
+    BTS records ``FlightDate`` as the **departure** date, so a flight that
+    leaves the west coast late on the last day of the preceding month lands in
+    the small hours of the first day of the study window. Those arrivals belong
+    to the window but live in the previous month's file, and without them the
+    first morning of the data is short by roughly ten percent with nothing to
+    indicate it. One extra month is therefore always fetched; the preprocessing
+    notebook filters on arrival date and discards the remainder.
+
+    Args:
+        start: First month of the study window, ``YYYY-MM``.
+
+    Returns:
+        The preceding month, ``YYYY-MM``.
+
+    Raises:
+        ValueError: If ``start`` fails to parse.
+    """
+    try:
+        year, month = (int(part) for part in start.split("-"))
+    except ValueError as exc:
+        raise ValueError("Months must be formatted as YYYY-MM.") from exc
+
+    return f"{year - 1}-12" if month == 1 else f"{year}-{month - 1:02d}"
+
+
 def window_bounds(start: str, end: str) -> tuple[datetime, datetime]:
     """Return the half-open datetime bounds of a ``YYYY-MM`` month range.
 
@@ -588,10 +617,17 @@ def main(argv: list[str] | None = None) -> int:
             )
 
         if not args.skip_bts:
-            logger.info("--- BTS on-time performance ---")
+            # One month earlier than the taxi data, deliberately. See
+            # `bts_start_month`.
+            flight_start = bts_start_month(args.start)
+            logger.info(
+                "--- BTS on-time performance (from %s, one month before the "
+                "window, to recover overnight arrivals) ---",
+                flight_start,
+            )
             download_bts_months(
                 session,
-                args.start,
+                flight_start,
                 args.end,
                 args.output / "bts",
                 overwrite=args.overwrite,

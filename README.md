@@ -7,7 +7,10 @@ Research goal.
 - **Dataset:** NYC TLC Yellow Taxi trip records, January 2023 – June 2024
   (18 monthly files, 58,642,319 trips)
 - **External dataset:** [BTS Reporting Carrier On-Time Performance](https://www.transtats.bts.gov/Fields.asp?gnoyr_VQ=FGJ),
-  filtered to flights touching JFK, LGA, and EWR (18 monthly files, 1,277,944 flights)
+  filtered to flights touching JFK, LGA, and EWR (19 monthly files, 1,349,639 flights).
+  Nineteen, not eighteen: BTS records the *departure* date, so arrivals in the small
+  hours of 1 January 2023 sit in the December 2022 file. `download.py` fetches one month
+  ahead of the window automatically and `2b` discards whatever lands outside it.
 - **Report:** `report/main.pdf`
 
 ---
@@ -55,7 +58,7 @@ If BTS remains unavailable, the taxi data can be fetched on its own with
 
 Each BTS monthly archive expands to roughly 250 MB of CSV covering all domestic
 US flights. Only flights touching JFK, LGA, or EWR are retained, reducing the
-18-month feed to 1,277,944 rows; the script prints per-month retention as it runs.
+19-month feed to 1,349,639 rows; the script prints per-month retention as it runs.
 
 ## Running the pipeline
 
@@ -181,12 +184,21 @@ at the meter rather than derived from GPS.
 
 | Step | Rows | Removed | Justification |
 |------|------|---------|---------------|
-| Raw BTS ingest | 1,277,944 | — | Post-download filter to flights touching JFK, LGA, EWR |
-| Arrival at JFK or LGA | | | Only arrivals generate pickups, and the filter guarantees the clock fields are New York local |
-| Well-formed scheduled clock fields | | | `hhmm` readings outside [0, 2400] or with a minute component of 60+ cannot be bucketed |
-| Scheduled arrival within study window | | | Applied after the overnight shift, so arrival date rather than departure date decides |
+| Raw BTS ingest | 1,349,639 | — | 19 monthly files: the 18 in the window plus December 2022 |
+| Arrival at JFK or LGA | 461,205 | 888,434 | Only arrivals generate pickups, and the filter guarantees the clock fields are New York local |
+| Well-formed scheduled clock fields | 461,205 | 0 | `hhmm` readings outside [0, 2400] or with a minute component of 60+ cannot be bucketed. No record failed |
+| Plausible implied block time | 461,203 | 2 | Two rows imply a 22-hour domestic leg; at least one clock field is corrupt and the overnight correction assigns them to the wrong day |
+| Scheduled arrival within study window | 436,754 | 24,449 | Applied after the overnight shift, so arrival date rather than departure date decides. Removes December 2022 except the arrivals that roll into 1 January, and the 49 June 2024 arrivals that roll past 1 July |
+
+Of the in-window scheduled arrivals, 424,672 (97.2%) actually landed; the remainder were
+cancelled or diverted. These aggregate onto the same 26,256-row grid as the taxi table.
+JFK schedules nothing to land in 1,910 of its hours and LaGuardia in 3,432 — the latter
+is the overnight curfew, at 6.3 hours a day.
 
 ## Notes and known limitations
 
+- The two busiest scheduled hours differ by airport: JFK peaks at 14:00 and 07:00, LGA at
+  13:00 and 17:00. LaGuardia's `share_longhaul` is 0.034 against JFK's 0.385, which is the
+  perimeter rule appearing in the data without being told to.
 - BTS covers domestic flights only; international arrivals at JFK are not
   represented. Discussed in the report.
