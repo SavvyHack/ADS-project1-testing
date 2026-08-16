@@ -30,7 +30,7 @@ EWR_ZONE = 1
 
 def create_spark_session(
     app_name: str = "MAST30034",
-    driver_memory: str = "8g",
+    driver_memory: str = "3g",
     shuffle_partitions: int = 32,
 ) -> SparkSession:
     """Create a locally configured Spark session.
@@ -51,7 +51,7 @@ def create_spark_session(
     """
     return (
         SparkSession.builder.appName(app_name)
-        .master("local[*]")
+        .master("local[4]")
         .config("spark.driver.memory", driver_memory)
         .config("spark.sql.shuffle.partitions", shuffle_partitions)
         .config("spark.sql.session.timeZone", "America/New_York")
