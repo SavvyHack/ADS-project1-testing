@@ -1,11 +1,13 @@
 """Download raw project data into ``data/landing``.
 
-Pulls three sources in a single pass:
+Pulls four sources in a single pass:
 
 1. NYC TLC Yellow Taxi trip records (monthly PARQUET).
 2. TLC taxi zone lookup table and zone shapefile.
 3. BTS Reporting Carrier On-Time Performance (monthly ZIP), filtered down to
    flights touching the NYC airports before being written to disk.
+4. Meteostat hourly weather observations for each NYC airport and for Central
+   Park, retrieved via the Meteostat bulk interface rather than over HTTP.
 
 The BTS archives expand to roughly 250 MB of CSV per month, the vast majority
 of which is irrelevant to this project. Each month is therefore filtered to
@@ -20,6 +22,7 @@ Usage
 -----
     python scripts/download.py --start 2023-01 --end 2024-06
     python scripts/download.py --start 2023-01 --end 2024-06 --skip-bts
+    python scripts/download.py --skip-taxi --skip-bts   # weather only
 """
 
 from __future__ import annotations
@@ -29,11 +32,13 @@ import logging
 import shutil
 import sys
 import zipfile
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Iterator
 
 import pandas as pd
 import requests
+from meteostat import Hourly, Stations
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -73,6 +78,36 @@ BTS_COLUMNS = [
     "Diverted",
     "Distance",
 ]
+
+#: Sites for which hourly weather observations are retrieved, as
+#: (latitude, longitude). The three airports are the sites that matter here: a
+#: driver queueing at JFK is exposed to the weather at JFK, not to the citywide
+#: average, and the same system drives both the arrival delays and the
+#: passenger's willingness to wait for a cab. Central Park is retained as a
+#: citywide reference series for the exploratory analysis.
+WEATHER_SITES = {
+    "JFK": (40.6413, -73.7781),
+    "LGA": (40.7769, -73.8740),
+    "EWR": (40.6895, -74.1745),
+    "NYC": (40.7794, -73.9692),  # Central Park
+}
+
+#: Meteostat columns retained. ``dwpt`` (dew point) is dropped as redundant
+#: given temperature and humidity, and ``tsun`` (sunshine minutes) is
+#: essentially unpopulated for US stations.
+WEATHER_COLUMNS = [
+    "temp",   # air temperature, degrees Celsius
+    "rhum",   # relative humidity, percent
+    "prcp",   # precipitation over the hour, mm
+    "snow",   # snow depth, mm -- see caveat in download_weather_sites
+    "wspd",   # average wind speed, km/h
+    "wpgt",   # peak wind gust, km/h
+    "pres",   # sea-level air pressure, hPa
+    "coco",   # Meteostat weather condition code
+]
+
+#: Every timestamp in this project is New York wall-clock time.
+LOCAL_TZ = "America/New_York"
 
 CHUNK_SIZE = 1 << 20  # 1 MiB
 REQUEST_TIMEOUT = (10, 300)  # (connect, read) seconds
@@ -314,6 +349,183 @@ def download_bts_months(
             shutil.rmtree(work_dir, ignore_errors=True)
 
 
+def window_bounds(start: str, end: str) -> tuple[datetime, datetime]:
+    """Return the half-open datetime bounds of a ``YYYY-MM`` month range.
+
+    Args:
+        start: First month, ``YYYY-MM``.
+        end: Last month, ``YYYY-MM``, inclusive.
+
+    Returns:
+        ``(begin, finish)`` where ``begin`` is midnight on the first day of
+        ``start`` and ``finish`` is midnight on the first day of the month
+        after ``end``. Both are naive and denote New York local time.
+    """
+    months = list(month_range(start, end))
+    first_year, first_month = months[0]
+    last_year, last_month = months[-1]
+
+    begin = datetime(first_year, first_month, 1)
+    if last_month == 12:
+        finish = datetime(last_year + 1, 1, 1)
+    else:
+        finish = datetime(last_year, last_month + 1, 1)
+    return begin, finish
+
+
+def resolve_station(latitude: float, longitude: float) -> pd.Series:
+    """Find the Meteostat station nearest a coordinate.
+
+    Station identifiers are resolved from coordinates rather than hard-coded,
+    so the station actually used is discovered and logged at run time rather
+    than asserted. The identifier and its distance from the site are written to
+    a manifest so the report can cite the specific station.
+
+    Args:
+        latitude: Site latitude in decimal degrees.
+        longitude: Site longitude in decimal degrees.
+
+    Returns:
+        The station record, whose index label is the Meteostat station id.
+
+    Raises:
+        ValueError: If no station is found near the coordinate.
+    """
+    stations = Stations().nearby(latitude, longitude).fetch(1)
+    if stations.empty:
+        raise ValueError(f"No weather station found near ({latitude}, {longitude})")
+    return stations.iloc[0]
+
+
+def download_weather_sites(
+    start: str,
+    end: str,
+    output_dir: Path,
+    *,
+    overwrite: bool = False,
+) -> None:
+    """Retrieve hourly weather observations for every site in WEATHER_SITES.
+
+    Four decisions here are deliberate and belong in the report's
+    preprocessing section.
+
+    **Observations only.** Meteostat's ``model`` parameter defaults to True,
+    which backfills gaps in the observation record with numerical weather model
+    output. Those are not measurements. It is set to False, so every retained
+    row is a real observation and a gap appears as a null that can be counted
+    rather than as a plausible number of unknown provenance. Per-column null
+    rates are logged for exactly this reason.
+
+    **Explicit timezone conversion.** Meteostat returns a naive UTC index.
+    Rather than passing its ``timezone`` argument and inheriting its DST
+    handling, the index is localised to UTC and converted here, matching the
+    convention used for the TLC and BTS data. The request is padded by a day at
+    each end so conversion cannot clip the first or last local hour.
+
+    **The duplicated fall-back hour.** On the date the clocks go back, 01:00
+    occurs twice, producing two rows on the same ``(obs_date, obs_hour)`` key.
+    Left alone this silently duplicates rows when joined to the taxi table, so
+    the pair is collapsed by averaging.
+
+    **Snow depth is usually empty.** ``snow`` is snow *depth*, which US METAR
+    stations rarely report hourly. Expect it to be almost entirely null and
+    derive snowfall from the ``coco`` condition code instead, after inspecting
+    which codes actually occur in the retrieved window.
+
+    Args:
+        start: First month, ``YYYY-MM``.
+        end: Last month, ``YYYY-MM``, inclusive.
+        output_dir: Destination directory for the per-site PARQUET files.
+        overwrite: Re-download sites whose output already exists.
+    """
+    output_dir.mkdir(parents=True, exist_ok=True)
+    begin, finish = window_bounds(start, end)
+    manifest = []
+
+    for code, (latitude, longitude) in WEATHER_SITES.items():
+        parquet_path = output_dir / f"weather_{code.lower()}.parquet"
+        if parquet_path.exists() and not overwrite:
+            logger.info("Skipping %s (already present)", parquet_path.name)
+            continue
+
+        station = resolve_station(latitude, longitude)
+        logger.info(
+            "%s -> station %s (%s), %.1f km away",
+            code,
+            station.name,
+            station["name"],
+            station["distance"] / 1000,
+        )
+
+        # Pad the UTC request by a day either side. New York is UTC-4 or -5, so
+        # an unpadded request loses hours at both boundaries on conversion.
+        frame = Hourly(
+            station.name,
+            begin - timedelta(days=1),
+            finish + timedelta(days=1),
+            model=False,
+        ).fetch()
+
+        if frame.empty:
+            logger.warning("No observations returned for %s", code)
+            continue
+
+        frame = frame.reindex(columns=WEATHER_COLUMNS)
+        frame.index = frame.index.tz_localize("UTC").tz_convert(LOCAL_TZ)
+
+        # Clip to the study window in local time, then split the local
+        # wall-clock timestamp into the key used by every other table.
+        frame = frame[
+            (frame.index >= begin.isoformat()) & (frame.index < finish.isoformat())
+        ]
+        frame = frame.reset_index(names="observed_at")
+        frame["site"] = code
+        frame["obs_date"] = frame["observed_at"].dt.date
+        frame["obs_hour"] = frame["observed_at"].dt.hour
+        frame["observed_at"] = frame["observed_at"].dt.tz_localize(None)
+
+        duplicates = int(frame.duplicated(subset=["obs_date", "obs_hour"]).sum())
+        if duplicates:
+            logger.info("  collapsing %d duplicated DST hour(s)", duplicates)
+            frame = frame.groupby(
+                ["site", "obs_date", "obs_hour"], as_index=False
+            ).agg({**{column: "mean" for column in WEATHER_COLUMNS},
+                   "observed_at": "min"})
+
+        frame.to_parquet(parquet_path, index=False)
+
+        expected_hours = int((finish - begin).total_seconds() // 3600)
+        null_rates = {
+            column: round(float(frame[column].isna().mean()), 4)
+            for column in WEATHER_COLUMNS
+        }
+        logger.info(
+            "  %s: %s of %s hours present; null rates %s",
+            parquet_path.name,
+            f"{len(frame):,}",
+            f"{expected_hours:,}",
+            null_rates,
+        )
+
+        manifest.append(
+            {
+                "site": code,
+                "station_id": station.name,
+                "station_name": station["name"],
+                "latitude": station["latitude"],
+                "longitude": station["longitude"],
+                "distance_km": round(station["distance"] / 1000, 2),
+                "hours_retrieved": len(frame),
+                "hours_expected": expected_hours,
+            }
+        )
+
+    if manifest:
+        manifest_path = output_dir / "weather_stations.csv"
+        pd.DataFrame(manifest).to_csv(manifest_path, index=False)
+        logger.info("Station manifest written to %s", manifest_path)
+
+
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
@@ -322,7 +534,9 @@ def download_bts_months(
 def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse command-line arguments."""
     parser = argparse.ArgumentParser(
-        description="Download TLC taxi and BTS flight data into data/landing.",
+        description=(
+            "Download TLC taxi, BTS flight, and weather data into data/landing."
+        ),
     )
     parser.add_argument(
         "--start", default="2023-01", help="First month, YYYY-MM (default: 2023-01)."
@@ -344,6 +558,9 @@ def parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     )
     parser.add_argument(
         "--skip-bts", action="store_true", help="Skip BTS flight data."
+    )
+    parser.add_argument(
+        "--skip-weather", action="store_true", help="Skip weather observations."
     )
     return parser.parse_args(argv)
 
@@ -377,6 +594,15 @@ def main(argv: list[str] | None = None) -> int:
                 args.start,
                 args.end,
                 args.output / "bts",
+                overwrite=args.overwrite,
+            )
+
+        if not args.skip_weather:
+            logger.info("--- Hourly weather observations ---")
+            download_weather_sites(
+                args.start,
+                args.end,
+                args.output / "weather",
                 overwrite=args.overwrite,
             )
     except ValueError as exc:
