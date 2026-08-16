@@ -31,8 +31,8 @@ pip install -r requirements.txt
 python scripts/download.py --start 2023-01 --end 2024-06
 ```
 
-Writes 946 MB to `data/landing/` in roughly 10 minutes — 935 MB of trip records
-and 11 MB of filtered flight data. The range above is the default; results
+Writes roughly 950 MB to `data/landing/` in about 10 minutes — 935 MB of trip records
+and 12 MB of filtered flight data across 19 months. The range above is the default; results
 reported in `report/main.pdf` use exactly this range. Downloads are idempotent —
 if the run is interrupted, re-run the same command and completed files are
 skipped. `--help` lists all options.
@@ -148,9 +148,15 @@ addressed in `scripts/spark_utils.py` or `notebooks/1_preprocessing.ipynb`.
 - Cancelled flights are retained in the scheduled series, since a cancellation is
   visible on the arrivals board, and excluded from the realised series along with
   diversions.
-- December 2022 is outside the download range, so flights that departed on 31 December
-  and landed on 1 January 2023 are absent and the first hours of the window under-count
-  arrivals. Notebook 2b measures the mirror case at the closing end and reports it.
+- `FlightDate` is the departure date, so arrivals in the small hours of 1 January 2023
+  are recorded in the December 2022 file. `download.py` fetches one month ahead of the
+  window for this reason and notebook 2b keeps the 24 arrivals that land inside it,
+  discarding the rest of that month. 2b asserts the preceding month is present, so the
+  recovery cannot silently fail to happen.
+- Two rows imply a 22-hour domestic block time, both Republic Airways regional legs into
+  LaGuardia whose scheduled arrival precedes its scheduled departure by two hours. At
+  least one clock field is corrupt in each, and the overnight correction assigns them to
+  the wrong day, so they are removed.
 
 ## Preprocessing summary
 
@@ -190,7 +196,7 @@ at the meter rather than derived from GPS.
 | Plausible implied block time | 461,203 | 2 | Two rows imply a 22-hour domestic leg; at least one clock field is corrupt and the overnight correction assigns them to the wrong day |
 | Scheduled arrival within study window | 436,754 | 24,449 | Applied after the overnight shift, so arrival date rather than departure date decides. Removes December 2022 except the arrivals that roll into 1 January, and the 49 June 2024 arrivals that roll past 1 July |
 
-Of the in-window scheduled arrivals, 424,672 (97.2%) actually landed; the remainder were
+Of the in-window scheduled arrivals, 424,670 (97.2%) actually landed; the remainder were
 cancelled or diverted. These aggregate onto the same 26,256-row grid as the taxi table.
 JFK schedules nothing to land in 1,910 of its hours and LaGuardia in 3,432 — the latter
 is the overnight curfew, at 6.3 hours a day.
