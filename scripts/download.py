@@ -249,11 +249,9 @@ def download_taxi_zones(
     *,
     overwrite: bool = False,
 ) -> None:
-    """Download the taxi zone lookup table and extract the zone shapefile."""
-
+    """Download the taxi zone lookup table and the zone shapefile archive."""
     output_dir.mkdir(parents=True, exist_ok=True)
 
-    # Taxi-zone lookup table
     download_file(
         session,
         f"{TLC_MISC_URL}/taxi_zone_lookup.csv",
@@ -261,9 +259,7 @@ def download_taxi_zones(
         overwrite=overwrite,
     )
 
-    # Taxi-zone shapefile archive
     archive_path = output_dir / "taxi_zones.zip"
-
     downloaded = download_file(
         session,
         f"{TLC_MISC_URL}/taxi_zones.zip",
@@ -271,20 +267,10 @@ def download_taxi_zones(
         overwrite=overwrite,
     )
 
-    # The TLC ZIP already contains a taxi_zones/ directory.
-    shapefile_path = output_dir / "taxi_zones" / "taxi_zones.shp"
+    shapefile_dir = output_dir / "taxi_zones"
+    shapefile_path = shapefile_dir / "taxi_zones.shp"
 
-    # Extract if:
-    # 1. we just downloaded a new archive, or
-    # 2. the actual shapefile is missing.
     if downloaded or not shapefile_path.exists():
-
-        if not archive_path.exists():
-            raise FileNotFoundError(
-                f"Taxi-zone archive is unavailable: {archive_path}"
-            )
-
-        # Extract into the TLC directory, NOT into another taxi_zones directory.
         with zipfile.ZipFile(archive_path) as archive:
             archive.extractall(output_dir)
 
@@ -294,14 +280,42 @@ def download_taxi_zones(
                 f"was not found at {shapefile_path}"
             )
 
-        logger.info(
-            "Extracted taxi-zone shapefile to %s",
-            shapefile_path.parent,
-        )
+        logger.info("Extracted shapefile to %s", shapefile_dir)
     else:
-        logger.info(
-            "Skipping taxi-zone extraction (already present)"
-        )
+        logger.info("Skipping taxi-zone extraction (already present)")
+
+
+def filter_bts_month(csv_path: Path, parquet_path: Path) -> None:
+    """Filter one BTS monthly extract to NYC airports and write PARQUET.
+
+    Reads only the columns in :data:`BTS_COLUMNS`, retains flights whose
+    origin or destination is an NYC airport, and writes the result. Reducing
+    the file at ingest avoids carrying ~250 MB per month of irrelevant
+    domestic flights through the rest of the pipeline.
+
+    Args:
+        csv_path: Extracted BTS CSV for a single month.
+        parquet_path: Destination PARQUET path.
+    """
+    frame = pd.read_csv(
+        csv_path,
+        usecols=lambda column: column in BTS_COLUMNS,
+        low_memory=False,
+    )
+    total_rows = len(frame)
+
+    frame = frame[
+        frame["Origin"].isin(NYC_AIRPORTS) | frame["Dest"].isin(NYC_AIRPORTS)
+    ].copy()
+
+    frame.to_parquet(parquet_path, index=False)
+    logger.info(
+        "  %s: %s of %s rows retained (%.1f%%)",
+        parquet_path.name,
+        f"{len(frame):,}",
+        f"{total_rows:,}",
+        100 * len(frame) / total_rows if total_rows else 0.0,
+    )
 
 
 def download_bts_months(
