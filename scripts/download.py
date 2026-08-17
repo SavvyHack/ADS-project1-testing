@@ -304,39 +304,6 @@ def download_taxi_zones(
         )
 
 
-def filter_bts_month(csv_path: Path, parquet_path: Path) -> None:
-    """Filter one BTS monthly extract to NYC airports and write PARQUET.
-
-    Reads only the columns in :data:`BTS_COLUMNS`, retains flights whose
-    origin or destination is an NYC airport, and writes the result. Reducing
-    the file at ingest avoids carrying ~250 MB per month of irrelevant
-    domestic flights through the rest of the pipeline.
-
-    Args:
-        csv_path: Extracted BTS CSV for a single month.
-        parquet_path: Destination PARQUET path.
-    """
-    frame = pd.read_csv(
-        csv_path,
-        usecols=lambda column: column in BTS_COLUMNS,
-        low_memory=False,
-    )
-    total_rows = len(frame)
-
-    frame = frame[
-        frame["Origin"].isin(NYC_AIRPORTS) | frame["Dest"].isin(NYC_AIRPORTS)
-    ].copy()
-
-    frame.to_parquet(parquet_path, index=False)
-    logger.info(
-        "  %s: %s of %s rows retained (%.1f%%)",
-        parquet_path.name,
-        f"{len(frame):,}",
-        f"{total_rows:,}",
-        100 * len(frame) / total_rows if total_rows else 0.0,
-    )
-
-
 def download_bts_months(
     session: requests.Session,
     start: str,
