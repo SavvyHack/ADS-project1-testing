@@ -249,9 +249,11 @@ def download_taxi_zones(
     *,
     overwrite: bool = False,
 ) -> None:
-    """Download the taxi zone lookup table and the zone shapefile archive."""
+    """Download the taxi zone lookup table and extract the zone shapefile."""
+
     output_dir.mkdir(parents=True, exist_ok=True)
 
+    # Taxi-zone lookup table
     download_file(
         session,
         f"{TLC_MISC_URL}/taxi_zone_lookup.csv",
@@ -259,7 +261,9 @@ def download_taxi_zones(
         overwrite=overwrite,
     )
 
+    # Taxi-zone shapefile archive
     archive_path = output_dir / "taxi_zones.zip"
+
     downloaded = download_file(
         session,
         f"{TLC_MISC_URL}/taxi_zones.zip",
@@ -267,12 +271,37 @@ def download_taxi_zones(
         overwrite=overwrite,
     )
 
-    shapefile_dir = output_dir / "taxi_zones"
-    if downloaded or not shapefile_dir.exists():
-        shapefile_dir.mkdir(parents=True, exist_ok=True)
+    # The TLC ZIP already contains a taxi_zones/ directory.
+    shapefile_path = output_dir / "taxi_zones" / "taxi_zones.shp"
+
+    # Extract if:
+    # 1. we just downloaded a new archive, or
+    # 2. the actual shapefile is missing.
+    if downloaded or not shapefile_path.exists():
+
+        if not archive_path.exists():
+            raise FileNotFoundError(
+                f"Taxi-zone archive is unavailable: {archive_path}"
+            )
+
+        # Extract into the TLC directory, NOT into another taxi_zones directory.
         with zipfile.ZipFile(archive_path) as archive:
-            archive.extractall(shapefile_dir)
-        logger.info("Extracted shapefile to %s", shapefile_dir)
+            archive.extractall(output_dir)
+
+        if not shapefile_path.exists():
+            raise FileNotFoundError(
+                f"Taxi-zone archive extracted but expected shapefile "
+                f"was not found at {shapefile_path}"
+            )
+
+        logger.info(
+            "Extracted taxi-zone shapefile to %s",
+            shapefile_path.parent,
+        )
+    else:
+        logger.info(
+            "Skipping taxi-zone extraction (already present)"
+        )
 
 
 def filter_bts_month(csv_path: Path, parquet_path: Path) -> None:

@@ -84,16 +84,46 @@ Execute in order. Each notebook reads the previous stage's output.
 | 1 | `notebooks/2a_preprocess_taxi.ipynb` | Business-rule filtering of all 58.6M trips, then aggregation of the JFK and LGA subset to airport-hours | `data/landing/tlc/` | `data/raw/trips_clean.parquet`, `data/curated/taxi_airport_hourly.parquet`, `preprocessing_counts_taxi.csv`, `shapes_taxi.json` |
 | 2 | `notebooks/2b_preprocess_flights.ipynb` | New York local arrival hour, then aggregation to the same airport-hour grid | `data/landing/bts/` | `data/curated/flights_hourly.parquet`, `flights_hourly_ewr.parquet`, `flight_column_roles.json`, `preprocessing_counts_flights.csv`, `shapes_flights.json` |
 | 3 | `notebooks/2c_join_features.ipynb` | Join on the airport-hour key; weather cleaning, temporal, holiday, and lag features; leakage enforcement; train/test split | `data/curated/`, `data/landing/weather/` | `data/curated/model_table.parquet`, `model_table_roles.json`, `shapes_model_table.json` |
-| 4 | `notebooks/3_analysis.ipynb` | Distributions, outliers, geospatial visualisation | `data/raw/`, `data/curated/` | `plots/` |
-| 5 | `notebooks/4_modelling.ipynb` | Poisson GLM and gradient-boosted trees | `data/curated/` | `models/`, `plots/` |
+| 4 | `notebooks/3_analysis.ipynb` | Distributions, outliers, temporal and weather analysis, geospatial visualisation | `data/raw/`, `data/curated/`, `data/landing/tlc/` | `plots/` (7 figures), `distribution_summary.csv`, `analysis_findings.json` |
+| 5 | `notebooks/4_modelling.ipynb` | Poisson GLM for demand, gradient-boosted trees for fare, and their product | `data/curated/model_table.parquet`, `model_table_roles.json` | `models/`, `data/curated/model_predictions.parquet`, `model_results.json`, `plots/` (3 figures) |
 
 All four curated tables share one key: `(date, hour, airport)` for JFK and LGA, 547 days
 × 24 hours × 2 airports = **26,256 rows**. Table A carries it as
 `(pickup_date, pickup_hour, airport)`; notebook 2c renames those two columns on load. Any
 join that changes the row count is a bug, and 2c asserts the count after each one.
 
-Notebooks import shared helpers from `scripts/spark_utils.py` via
-`sys.path.append("../scripts")`.
+Notebooks import shared helpers from `scripts/spark_utils.py` and, from notebook 3
+onward, figure styling from `scripts/plot_utils.py`, via `sys.path.append("../scripts")`.
+Every figure in the report is drawn at the template's text width through `plot_utils`, so
+that one palette, one font size, and one export resolution apply across the report.
+
+## Modelling
+
+Two models with different jobs, combined rather than raced:
+
+| | Model 1 | Model 2 |
+|---|---|---|
+| Question | How many pickups in this airport-hour? | What is a pickup worth in it? |
+| Target | `n_pickups` | `mean_total` |
+| Family | Poisson GLM, log link, quasi-Poisson scale, hour interacted with airport | `HistGradientBoostingRegressor` |
+| Missing data | Complete design matrix; imputation fitted on the training split | Handled natively, unimputed |
+| Read through | Rate ratios and an adjusted hourly demand profile | Permutation importance on the test split |
+
+Their product is expected revenue per airport-hour, which rests on the identity 2c
+asserts: `n_pickups × mean_total` reproduces `sum_total_amount` to the cent. The
+combination is evaluable on every test hour, including the empty ones where the value
+model alone is undefined, against the product of the two seasonal-naive forecasts.
+
+A negative binomial is fitted on the same design as a contrast, with its dispersion
+estimated by the standard auxiliary regression, so the demand result can be reported as
+robust to the variance assumption rather than conditional on it. Boosting hyper-parameters
+are chosen on October–December 2023 and refitted on the full training year: the split is
+forward in time at every level, including model selection.
+
+**Market revenue is not a wage.** `n_pickups × mean_total` is what the fleet collectively
+earned from a queue, not what one driver takes home; the TLC data records trips, not
+waiting taxis, so queue length is unobserved. The defensible use is comparative — which
+queue is worth more at the same moment — and the report states the assumption.
 
 ## Repository structure
 
@@ -105,7 +135,8 @@ Notebooks import shared helpers from `scripts/spark_utils.py` via
 ├── notebooks/             # numbered, run in order
 ├── scripts/
 │   ├── download.py        # data acquisition
-│   └── spark_utils.py     # session config, schema normalisation, loaders
+│   ├── spark_utils.py     # session config, schema normalisation, loaders
+│   └── plot_utils.py      # palette, figure sizing, saving at 300 dpi
 ├── plots/                 # figures used in the report
 ├── models/                # fitted model artefacts
 ├── report/                # LaTeX source and compiled PDF
