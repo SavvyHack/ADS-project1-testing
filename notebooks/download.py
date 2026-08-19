@@ -416,9 +416,8 @@ def resolve_station(latitude: float, longitude: float) -> pd.Series:
     """Find the Meteostat station nearest a coordinate.
 
     Station identifiers are resolved from coordinates rather than hard-coded,
-    so the station actually used is discovered and logged at run time rather
-    than asserted. The identifier and its distance from the site are written to
-    a manifest so the report can cite the specific station.
+    so the station used is discovered and logged at run time. The identifier
+    and its distance from the site are written to a manifest.
 
     Args:
         latitude: Site latitude in decimal degrees.
@@ -445,31 +444,21 @@ def download_weather_sites(
 ) -> None:
     """Retrieve hourly weather observations for every site in WEATHER_SITES.
 
-    Four decisions here are deliberate and belong in the report's
-    preprocessing section.
+    Four things this function does deliberately:
 
-    **Observations only.** Meteostat's ``model`` parameter defaults to True,
-    which backfills gaps in the observation record with numerical weather model
-    output. Those are not measurements. It is set to False, so every retained
-    row is a real observation and a gap appears as a null that can be counted
-    rather than as a plausible number of unknown provenance. Per-column null
-    rates are logged for exactly this reason.
-
-    **Explicit timezone conversion.** Meteostat returns a naive UTC index.
-    Rather than passing its ``timezone`` argument and inheriting its DST
-    handling, the index is localised to UTC and converted here, matching the
-    convention used for the TLC and BTS data. The request is padded by a day at
-    each end so conversion cannot clip the first or last local hour.
-
-    **The duplicated fall-back hour.** On the date the clocks go back, 01:00
-    occurs twice, producing two rows on the same ``(obs_date, obs_hour)`` key.
-    Left alone this silently duplicates rows when joined to the taxi table, so
-    the pair is collapsed by averaging.
-
-    **Snow depth is usually empty.** ``snow`` is snow *depth*, which US METAR
-    stations rarely report hourly. Expect it to be almost entirely null and
-    derive snowfall from the ``coco`` condition code instead, after inspecting
-    which codes actually occur in the retrieved window.
+    - **Observations only.** ``model=False`` is passed, so Meteostat does not
+      backfill gaps with numerical model output and every retained row is a
+      real observation. Per-column null rates are logged.
+    - **Explicit timezone conversion.** Meteostat returns a naive UTC index,
+      which is localised and converted here rather than through its own
+      ``timezone`` argument, matching the TLC and BTS convention. The request
+      is padded by a day at each end so conversion cannot clip the boundary
+      hours.
+    - **The duplicated fall-back hour.** On the date the clocks go back, 01:00
+      occurs twice, giving two rows on one ``(obs_date, obs_hour)`` key. The
+      pair is collapsed by averaging so the key stays unique.
+    - **Snow depth.** ``snow`` is snow *depth*, which US METAR stations rarely
+      report hourly, so it is expected to be almost entirely null.
 
     Args:
         start: First month, ``YYYY-MM``.

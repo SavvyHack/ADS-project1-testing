@@ -1,15 +1,12 @@
 """Shared figure configuration for the report.
 
-Every figure in ``plots/`` is produced through this module so that one palette,
-one font size, one figure width, and one output resolution apply across the
-whole report. Two of the ten report-writing marks are for figure quality, and
-consistency is the cheapest way to earn them: a reader should not be able to
-tell which notebook cell drew which figure.
+Every figure in ``plots/`` is produced through this module, so that one
+palette, one font size, one figure width, and one output resolution apply
+across the whole report.
 
 The width is fixed to the LaTeX template's text width so that figures are
-included at their natural size. A figure drawn at 12 inches and then scaled
-down by ``\\includegraphics[width=\\textwidth]`` has its labels scaled down with
-it, which is the usual reason report figures end up illegible.
+included at their natural size rather than scaled by ``\\includegraphics``,
+which would scale their labels down with them.
 
 Typical use::
 
@@ -32,23 +29,19 @@ from matplotlib.figure import Figure
 from matplotlib.ticker import FuncFormatter
 
 # --- Geometry --------------------------------------------------------------
-#: Text width of the report template, in inches. The template is
-#: ``\documentclass[11pt]{article}`` on US Letter (8.5 in) with 0.9 in margins,
-#: which leaves 6.7 in of text. Figures are drawn a fraction narrower so that
-#: ``width=\textwidth`` never has to scale them *up*, which would soften the
-#: raster.
+#: Text width of the report template, in inches: ``\documentclass[11pt]``
+#: on US Letter with 0.9 in margins leaves 6.7 in. Drawn a fraction narrower so
+#: ``width=\textwidth`` never scales the raster up.
 FIGURE_WIDTH_IN = 6.6
 
 #: Width for a figure intended to sit in half a text column.
 HALF_WIDTH_IN = 3.2
 
-#: Export resolution. 300 dpi is the usual print threshold; below roughly 200
-#: the tick labels visibly break up when the PDF is zoomed.
+#: Export resolution, at the usual print threshold.
 DPI = 300
 
 #: Default destination for saved figures, resolved from this file rather than
-#: from the working directory so that a notebook run from ``notebooks/`` and a
-#: script run from the project root write to the same place.
+#: from the working directory, so a notebook and a script agree on it.
 DEFAULT_PLOTS_DIR = Path(__file__).resolve().parents[1] / "plots"
 
 # --- Colour ----------------------------------------------------------------
@@ -70,13 +63,11 @@ PALETTE = {
 #: One colour per airport, used everywhere the two are drawn together.
 AIRPORT_COLOURS = {"JFK": PALETTE["blue"], "LGA": PALETTE["vermillion"]}
 
-#: Colour for the citywide baseline, which is context rather than a series of
-#: interest and is therefore deliberately quiet.
+#: Colour for the citywide baseline series.
 BASELINE_COLOUR = PALETTE["grey"]
 
-#: Sequential colour map for choropleths and heatmaps. Perceptually uniform,
-#: so equal steps in the data are equal steps in apparent lightness, and
-#: monotone in lightness so it greyscales without collapsing.
+#: Sequential colour map for choropleths and heatmaps. Perceptually uniform
+#: and monotone in lightness, so it greyscales without collapsing.
 SEQUENTIAL_CMAP = "viridis"
 
 #: Diverging map for quantities with a meaningful zero, such as a night-minus-
@@ -91,13 +82,9 @@ def set_plot_style() -> None:
     """Apply the project's Matplotlib defaults.
 
     Called once near the top of each notebook. Font sizes are set for a figure
-    included at its natural width next to 11 pt body text: 9 pt labels read as
-    slightly smaller than the surrounding prose, which is the intended effect,
-    and nothing in a figure is smaller than 8 pt.
-
-    A serif face is used to match the template's body font. ``DejaVu Serif``
-    ships with Matplotlib, so no font has to be installed for the figures to
-    reproduce on another machine.
+    included at its natural width next to 11 pt body text, and nothing in a
+    figure is smaller than 8 pt. ``DejaVu Serif`` ships with Matplotlib, so no
+    font has to be installed for the figures to reproduce elsewhere.
     """
     plt.rcParams.update({
         "figure.figsize": (FIGURE_WIDTH_IN, 3.4),
@@ -170,9 +157,8 @@ def save_figure(
             the directory sorts into report order.
         plots_dir: Destination directory. Defaults to ``plots/`` at the
             project root.
-        close: Whether to close the figure afterwards. Left False by default so
-            that the figure still renders in the notebook, which is how a
-            marker reads it.
+        close: Whether to close the figure afterwards. False by default, so
+            the figure still renders inline in the notebook.
 
     Returns:
         The path written.
@@ -243,9 +229,8 @@ def heatmap(
 ):
     """Draw a labelled heatmap on an existing axes.
 
-    Written once here because the hour-by-weekday grids are drawn four times
-    and a heatmap whose colour scale or tick spacing differs between panels
-    cannot be compared across them.
+    Written once here because the hour-by-weekday grids are drawn several
+    times and must share a colour scale and tick spacing to be comparable.
 
     Args:
         ax: Axes to draw on.
@@ -256,12 +241,11 @@ def heatmap(
         vmin: Lower limit of the colour scale. Share it across panels that are
             meant to be compared. Ignored when ``norm`` is given.
         vmax: Upper limit of the colour scale. Ignored when ``norm`` is given.
-        norm: Optional Matplotlib normalisation. Use it for a diverging scale
-            that must be anchored at zero without being forced symmetric —
-            ``TwoSlopeNorm`` — since a symmetric scale on a lopsided quantity
-            spends half its colour range on values that do not occur. Passing
-            both ``norm`` and ``vmin``/``vmax`` is an error in Matplotlib, so
-            the limits are dropped when a norm is supplied.
+        norm: Optional Matplotlib normalisation, for a diverging scale that
+            must be anchored at zero without being forced symmetric
+            (``TwoSlopeNorm``). Passing both ``norm`` and ``vmin``/``vmax`` is
+            an error in Matplotlib, so the limits are dropped when a norm is
+            given.
         title: Axes title.
         xlabel: Label for the horizontal axis.
         ylabel: Label for the vertical axis.
