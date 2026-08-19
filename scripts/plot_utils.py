@@ -235,6 +235,7 @@ def heatmap(
     cmap: str = SEQUENTIAL_CMAP,
     vmin: float | None = None,
     vmax: float | None = None,
+    norm=None,
     title: str = "",
     xlabel: str = "",
     ylabel: str = "",
@@ -253,8 +254,14 @@ def heatmap(
         col_labels: Labels for the columns, left to right.
         cmap: Colour map name.
         vmin: Lower limit of the colour scale. Share it across panels that are
-            meant to be compared.
-        vmax: Upper limit of the colour scale.
+            meant to be compared. Ignored when ``norm`` is given.
+        vmax: Upper limit of the colour scale. Ignored when ``norm`` is given.
+        norm: Optional Matplotlib normalisation. Use it for a diverging scale
+            that must be anchored at zero without being forced symmetric —
+            ``TwoSlopeNorm`` — since a symmetric scale on a lopsided quantity
+            spends half its colour range on values that do not occur. Passing
+            both ``norm`` and ``vmin``/``vmax`` is an error in Matplotlib, so
+            the limits are dropped when a norm is supplied.
         title: Axes title.
         xlabel: Label for the horizontal axis.
         ylabel: Label for the vertical axis.
@@ -264,10 +271,16 @@ def heatmap(
     Returns:
         The :class:`~matplotlib.image.AxesImage`, for attaching a colour bar.
     """
-    image = ax.imshow(
-        matrix, aspect="auto", origin="upper", cmap=cmap, vmin=vmin, vmax=vmax,
-        interpolation="nearest",
-    )
+    if norm is not None:
+        image = ax.imshow(
+            matrix, aspect="auto", origin="upper", cmap=cmap, norm=norm,
+            interpolation="nearest",
+        )
+    else:
+        image = ax.imshow(
+            matrix, aspect="auto", origin="upper", cmap=cmap, vmin=vmin,
+            vmax=vmax, interpolation="nearest",
+        )
 
     ax.set_xticks(range(0, len(col_labels), tick_every))
     ax.set_xticklabels(

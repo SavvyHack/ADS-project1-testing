@@ -118,7 +118,18 @@ A negative binomial is fitted on the same design as a contrast, with its dispers
 estimated by the standard auxiliary regression, so the demand result can be reported as
 robust to the variance assumption rather than conditional on it. Boosting hyper-parameters
 are chosen on October–December 2023 and refitted on the full training year: the split is
-forward in time at every level, including model selection.
+forward in time at every level, including model selection. Model 2 is additionally refitted
+weighted by `n_pickups`, since the product it feeds is revenue while its own loss is
+per-trip, and both are scored against the same benchmark.
+
+**The GLM design is checked for identification.** `arrival_slippage_lag_1h` is an exact
+linear combination of `actual_arrivals_lag_1h` and `sched_arrivals_prev_hr` — 2b defines
+the first as a difference and separately carries the lagged minuend — so leaving all three
+in the design makes it rank deficient. `statsmodels` does not raise on that: it
+pseudo-inverts and returns a minimum-norm split of one effect across three coefficients,
+each with a plausible standard error. Predictions are unaffected, the quoted rate ratios
+would not be. The derived difference is dropped from the GLM, kept for the trees, and
+notebook 4 asserts the design's rank against its column count after the fit.
 
 **Market revenue is not a wage.** `n_pickups × mean_total` is what the fleet collectively
 earned from a queue, not what one driver takes home; the TLC data records trips, not
@@ -138,7 +149,7 @@ queue is worth more at the same moment — and the report states the assumption.
 │   ├── spark_utils.py     # session config, schema normalisation, loaders
 │   └── plot_utils.py      # palette, figure sizing, saving at 300 dpi
 ├── plots/                 # figures used in the report
-├── models/                # fitted model artefacts
+├── models/                # fitted model artefacts, including the weighted variant
 ├── report/                # LaTeX source and compiled PDF
 ├── requirements.txt
 └── README.md
