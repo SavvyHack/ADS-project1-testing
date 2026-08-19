@@ -112,11 +112,18 @@ Two models with different jobs, combined rather than raced:
 Their product is expected revenue per airport-hour, which rests on the identity 2c
 asserts: `n_pickups × mean_total` reproduces `sum_total_amount` to the cent. The
 combination is evaluable on every test hour, including the empty ones where the value
-model alone is undefined, against the product of the two seasonal-naive forecasts.
+model alone is undefined, against the product of the two seasonal-naive forecasts. That
+identity holds row by row and not in expectation — a product of two conditional means
+omits `Cov(n_pickups, mean_total | X)` — so notebook 4 measures the omitted term and
+reports it beside the combination's error rather than charging the whole shortfall to the
+demand model.
 
 A negative binomial is fitted on the same design as a contrast, with its dispersion
-estimated by the standard auxiliary regression, so the demand result can be reported as
-robust to the variance assumption rather than conditional on it. Boosting hyper-parameters
+estimated by the standard auxiliary regression, so the demand result's sensitivity to the
+variance assumption is measured rather than assumed. The two are compared on squared
+error and on mean Poisson deviance, since squared error alone favours the Poisson by
+construction — a negative binomial's IRLS weight discounts exactly the busy hours where
+squared error is decided. Boosting hyper-parameters
 are chosen on October–December 2023 and refitted on the full training year: the split is
 forward in time at every level, including model selection. Model 2 is additionally refitted
 weighted by `n_pickups`, since the product it feeds is revenue while its own loss is
