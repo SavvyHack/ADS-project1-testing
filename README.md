@@ -21,7 +21,7 @@ predictors a driver could act on in advance.
   every retained row is a station observation rather than numerical-model output. The
   stations resolved, their distance from each airport, and the hours returned are written
   to `data/landing/weather/weather_stations.csv` at download time.
-- **Report:** `report/main.pdf`
+- **Report:** `report/main.pdf`, built from `report/main.tex` and `report/references.bib`
 
 Interpretation, findings, and recommendations live in the report. The notebooks carry the
 pipeline and its checks; their markdown describes what each step does, not what it means.
@@ -158,8 +158,12 @@ waiting taxis, so queue length is unobserved. The defensible use is comparative.
 │   └── test_new_blocks.py   # fixtures for the notebook 4 metric blocks
 ├── plots/                   # figures used in the report
 ├── models/                  # fitted model artefacts, including the weighted variant
-├── report/                  # LaTeX source and compiled PDF
+├── report/
+│   ├── main.tex             # LaTeX source
+│   ├── references.bib       # bibliography
+│   └── main.pdf             # compiled report
 ├── requirements.txt
+├── setup.cfg                # flake8 configuration
 └── README.md
 ```
 

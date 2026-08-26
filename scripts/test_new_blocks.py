@@ -18,10 +18,15 @@ observed = np.array([0.0, 0.0, 5.0, 300.0])
 fitted = np.array([0.4, 12.0, 4.0, 280.0])
 value = mean_poisson_deviance(observed, fitted)
 assert np.isfinite(value), "deviance must be finite when y contains zeros"
-manual = 2 * np.mean(
-    np.where(observed > 0, observed * np.log(observed / fitted), 0.0)
-    - (observed - fitted)
+# `np.where` evaluates both branches, so the zero counts still reach
+# `log(0/mu)` and raise a divide-by-zero warning even though the result is
+# discarded. Compute the log term only where it is defined.
+log_term = np.zeros_like(observed)
+positive = observed > 0
+log_term[positive] = observed[positive] * np.log(
+    observed[positive] / fitted[positive]
 )
+manual = 2 * np.mean(log_term - (observed - fitted))
 assert abs(value - manual) < 1e-9, (value, manual)
 print(f"deviance handles zero counts: {value:.4f} == {manual:.4f}")
 
