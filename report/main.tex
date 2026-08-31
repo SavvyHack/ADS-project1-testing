@@ -273,8 +273,8 @@ passengers are headed.
 What the map conceals is that fare is only half of what an hour is worth. Times
 Sq/Theatre District is the largest single destination at 5.38\% and pays \$86.28,
 but the run takes 49.7 minutes and returns only \$104.16 per engaged hour,
-against Murray Hill's \$136.12 on \$82.03 over 36.2 minutes. Hail rate is a
-second and separate axis: Times Square supplies 144.3 citywide pickups an hour
+against Murray Hill's \$136.12 on \$82.03 over 36.2 minutes. Street-hail rate is
+a second and separate axis: Times Square supplies 144.3 citywide pickups an hour
 against 69.7 in the Garment District, so how fast this trip ends and where the
 next one begins are different questions, and Section \ref{sec:recs} needs both.
  
@@ -290,7 +290,7 @@ governed by different mechanisms:
 \end{equation}
 where $\widehat{N}_{a,h}$ is a Poisson prediction of pickup count and
 $\widehat{F}_{a,h}$ a gradient-boosted prediction of mean fare per trip.
-
+ 
 Both models train on 2023 and test on January to June 2024, a strictly forward
 split, as any recommendation to a driver must be built only from information
 available before the shift begins. Of the 26,256 airport-hours, 342 are excluded
@@ -302,7 +302,9 @@ on the training split alone, and \texttt{arrival\_slippage\_lag\_1h} is dropped 
 an exact linear combination of two retained features. Everything below is
 reported beside a seasonal-naive benchmark \cite{hyndman} predicting each hour
 with the same hour one week earlier, as a model that cannot beat last Tuesday
-adds nothing a driver does not already have. Hour enters as 23 dummies interacted with airport rather than as a continuous term, as demand is not monotone, and are likely categorical.
+adds nothing a driver does not already have. Hour enters as 23 dummies
+interacted with airport rather than as a continuous term, as demand is not
+monotone.
  
 \textbf{Model 1: a Poisson GLM for demand.} The response is a non-negative
 integer count with a hard floor at zero, so a Poisson GLM with a log link is the
@@ -429,7 +431,8 @@ unweighted fit is retained.
 \centering
 \includegraphics[width=0.84\textwidth]{fig10_expected_revenue.png}
 \caption{Predicted expected revenue per airport-hour across an ordinary June
-midweek day, JFK against LGA, with observed values overlaid.}
+midweek day, JFK against LGA, with observed values overlaid, and the JFK
+advantage across the week.}
 \label{fig:revenue}
 \end{figure}
  
@@ -449,11 +452,12 @@ of a year and the model refitted monthly.
  
 \textbf{Start a weekday at LaGuardia and move to JFK after midday.} JFK is larger
 and pays more, so the default is to work it all day, and for most of the clock
-that is right: predicted revenue peaks at JFK 16:00 at \$28,214 per hour (the amount the fleet earned collectively), and the
-five best JFK hours fall between 15:00 and 22:00 at fares near \$85. The
-exception is narrow but repeatable: from (Figure \ref{fig:revenue}) LGA out-earns
-JFK in 19 of the 168 day-hour cells, concentrated at 09:00 to 11:00 on weekdays
-and peaking on Wednesday at 10:00 with an advantage of \$6,668 per hour (the amount that the fleet earned collectively). Section
+that is right: predicted revenue peaks at JFK 16:00 at \$28,214 per hour (the
+amount the fleet earned collectively), and the five best JFK hours fall between
+15:00 and 22:00 at fares near \$85. The exception is narrow but repeatable: from
+(Figure \ref{fig:revenue}) LGA out-earns JFK in 19 of the 168 day-hour cells,
+concentrated at 09:00 to 11:00 on weekdays and peaking on Wednesday at 10:00 with
+an advantage of \$6,668 per hour. Section
 \ref{sec:analysis} explains why this stays invisible: LaGuardia couples volume to
 value at only $+0.536$ against JFK's $+0.771$, so those cells pay near the top of
 the range on a short queue, and a driver judging by queue length reads them as
@@ -461,15 +465,16 @@ quiet. The advantage is strictly midweek. For a Queens-based driver the plan is 
 weekday start at LGA through the morning bank and a move to JFK from midday; for
 one already at JFK it is a reason not to rejoin the lot at 09:00.
  
-\textbf{Judge the drop-off by the hour it returns and the hail rate it lands in,
-not by the fare.} A driver has no control over the destination but does control
-what follows it, and Section \ref{sec:analysis} shows that the two quantities
-decides how fast the trip ends, and how easily the next one starts. Upper East Side North and
+\textbf{Judge the drop-off by the hour it returns and the street-hail rate it
+lands in, not by the fare.} A driver has no control over the destination but
+does control what follows it, and Section \ref{sec:analysis} shows that two
+quantities decide it: how fast the trip ends, and how easily the next one
+starts. Upper East Side North and
 Midtown East return \$139.22 and \$127.60 per engaged hour into zones supplying
 184.7 and 153.1 citywide pickups an hour, so after either the street is the right
 follow-up and a return to the rank wastes the trip back. Times Square is the
 opposite case on the higher fare, at \$104.16 per engaged hour, and the Garment
-District worse again on hail rate at 69.7 an hour; after those, (Figure
+District worse again on street-hail rate at 69.7 an hour; after those, (Figure
 \ref{fig:revenue}) decides whether the return leg pays at that hour --- which,
 for a Garment District drop between 15:00 and 22:00, it does. Ranking the four or
 five zones a driver actually works is a one-off exercise.
