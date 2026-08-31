@@ -1,0 +1,492 @@
+% Setup - do not change
+\documentclass[11pt]{article}
+\usepackage[top=0.9in, left=0.9in, bottom=0.9in, right=0.9in]{geometry} 
+\usepackage{parskip}
+
+\usepackage[english]{babel}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amsthm,amssymb,graphicx,pdfpages,lipsum,hyperref}
+\usepackage[none]{hyphenat}
+\usepackage{csquotes}
+
+\setlength\parindent{0pt}
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%
+% add other packages here if required
+
+%% Bibliography are specified in this file. You can also choose inline bib style if you want to. But make sure your citation style is consistent (and proper)
+% For more details on citation: https://library.unimelb.edu.au/recite
+\usepackage[sorting = none]{biblatex}
+\addbibresource{references.bib}
+
+%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%%% the '%' symbol denotes comments
+
+% Begin document creation
+% DELETE THE \lipsum PLACEHOLDERS WHEN YOU BEGIN
+\title{Flight Arrivals as a Demand Signal:\\
+Forecasting Yellow Taxi Revenue at JFK and LaGuardia}
+\author{Tavish Balyan \\ Student ID: 1615873 \\
+\href{https://github.com/MAST30034-AppliedDataScience/project-1-individual-SavvyHack/tree/951b6239bc4937ce3533f1b2ca4b42d81444ed06}{Github repo with commit}}
+\date{August 31, 2026}
+ 
+\begin{document}
+\maketitle
+ 
+\section{Introduction}
+ 
+A yellow taxi driver joining the holding lot at JFK is betting that the queue
+will clear before the fare stops being worth the wait, and the bet is a guess, but it doesn't need to be.
+The arrivals that will fill the rank in two hours are already published on a
+schedule that drivers do not consult. Can flight arrival data, combined with
+weather, predict airport taxi demand accurately enough to make that decision a
+calculated one? The audience is the individual yellow taxi driver choosing
+between airport and city work at the start of a shift, who absorbs both a long
+return and an unknown queue if they commit at the wrong hour; a useful prediction
+must therefore estimate not only how many trips there will be but what each is
+worth, per airport-hour.
+ 
+We restrict the analysis to yellow taxis, as they alone may street-hail
+passengers across all five boroughs, dominate the medallion ranks at both
+airports \cite{tlc_userguide}, and operate under the flat JFK to Manhattan fare,
+which makes their per-trip revenue structurally different from a for-hire
+vehicle's and worth modelling separately. JFK (taxi zone 132) and LaGuardia
+(zone 138) contrast usefully, as JFK is international, long-haul and flat-fared
+whereas LGA is domestic, shorter-haul and metered; Newark enters only as a
+context variable, as it sits outside the yellow medallion's service area.
+ 
+The timeline is January 2023 to June 2024: 18 months of TLC Yellow Taxi records,
+58,642,319 raw trips, of which 56,637,949 survive cleaning and 4,653,181 are
+airport pickups. The window begins after post-pandemic ridership had stabilised,
+as a model fitted across the recovery would learn a trend that no longer exists,
+and 18 months spans two winters and two summers, the minimum needed to separate
+weather from seasonal effects while leaving enough history for a forward split.
+ 
+Two external datasets support the goal. Flight arrivals come from the Bureau of
+Transportation Statistics Reporting Carrier On-Time Performance database
+\cite{bts}, which records both scheduled and actual arrival times and so allows
+two distinct signals to be built; one known to a driver in advance from the
+published schedule, and one describing realised slippage observable only after
+the fact. Hourly weather comes from Meteostat \cite{meteostat} for the JFK, LGA,
+EWR and Central Park stations, on the reasoning that precipitation suppresses the
+walk-up alternatives to a taxi and should therefore raise demand at the rank.
+ 
+\textbf{Methodology overview.} The contribution is a two-model decomposition of
+expected revenue per airport-hour. Trip records, flight arrivals and weather
+observations are aggregated onto a common airport-hour spine of 26,256 rows.
+Model 1 is a Poisson generalised linear model for the count of pickups in an
+airport-hour and Model 2 a histogram-based gradient boosting regressor for the
+mean fare of a trip in the same hour; their product is the quantity the queue
+decision turns on. The two contrast deliberately, one parametric and
+interpretable, the other free to capture interactions the first cannot express.
+Section \ref{sec:results} verifies that their residuals are close to independent,
+which is what licenses multiplying them.
+ 
+\textbf{Assumptions.}
+\begin{itemize}
+  \item Every recorded pickup in zones 132 and 138 is assumed to serve an
+        arriving passenger, as queue length is not observable in the data.
+  \item \texttt{FlightDate} in the BTS extract is the departure date rather than
+        the arrival date, so arrivals crossing midnight require a date shift.
+  \item Cancelled flights are assumed to generate no taxi demand, and fare value
+        is taken as the driver-relevant total excluding tips, as tipping is not
+        predictable from an arrival schedule.
+\end{itemize}
+ 
+\section{Preprocessing}
+ 
+\textbf{TLC Yellow Taxi records.} Eighteen monthly parquet files are loaded and
+normalised to a common 19-column schema, as column naming drifts between
+vintages. Records are then filtered against the business rules in the TLC Data
+Dictionary \cite{tlc_dict}, with the surviving row count recorded at each step in
+(Table \ref{tab:taxi_waterfall}).
+ 
+\begin{table}[htb]
+\centering
+\footnotesize
+\begin{tabular}{lrr}
+\toprule
+Filter & Rows remaining & Removed \\
+\midrule
+Raw ingest                              & 58,642,319 & --- \\
+Pickup within study window              & 58,642,192 & 127 \\
+Drop-off after pickup                   & 58,620,446 & 21,746 \\
+Duration between 1 min and 6 h          & 57,922,347 & 698,099 \\
+Positive trip distance                  & 57,243,639 & 678,708 \\
+Positive fare and total                 & 56,642,200 & 601,439 \\
+Metered fare at or above initial charge & 56,641,660 & 540 \\
+Implied speed below 80 mph              & 56,637,949 & 3,711 \\
+Documented rate code and payment type   & 56,637,949 & 0 \\
+\bottomrule
+\end{tabular}
+\caption{Taxi cleaning waterfall; 2,004,370 records are discarded, or 3.42\% of
+raw ingest. The final row removes nothing, which is the finding: both coded
+fields are clean rather than unchecked.}
+\label{tab:taxi_waterfall}
+\end{table}
+ 
+\begin{itemize}
+  \item Restrict to pickups in zones 132 and 138: 4,653,181 airport pickups, or
+        8.22\% of cleaned trips, split 2,753,043 JFK and 1,900,138 LGA.
+  \item Aggregate to hourly counts and fare summaries: 25,076 non-empty
+        airport-hours on a complete spine of 26,256; of the 1,180 remaining,
+        1,175 are genuine zeros rather than missing data and five are
+        daylight-saving artefacts.
+\end{itemize}
+ 
+\textbf{BTS Reporting Carrier On-Time Performance.} December 2022 to June 2024
+loads as 1,349,639 rows, 14 columns after normalisation, and filters to JFK and
+LGA arrivals: 461,205 rows (34.17\%), comprising 204,135 JFK and 257,070 LGA.
+\begin{itemize}
+  \item Convert the \texttt{hhmm} integer format, mapping the 2400 sentinel to 0
+        before the overnight date shift that moves 4.79\% of arrivals to the
+        following day, and bucket to the arrival hour only after both. The order
+        matters, as reversing it misassigns every arrival crossing midnight.
+  \item Drop two rows with implied block time above 18 hours (461,203 remaining),
+        both with corrupt clock fields, then restrict to scheduled arrivals in
+        the study window: 436,754, with 24,449 removed. The December 2022
+        download is included because flights departing 31 December 2022 land in
+        the early hours of 1 January 2023; it recovers 24 such arrivals, 4.7\% of
+        that day's traffic.
+  \item Of these, 10,389 were cancelled (2.38\%) and 1,634 diverted; with 61 more
+        landing past the window close, 424,670 realised arrivals fall inside it,
+        or 97.23\% of scheduled. Cancellations are excluded from realised counts,
+        as retaining them would inflate predicted demand on exactly the disrupted
+        days where prediction matters most. Aggregation gives 26,256
+        airport-hours, plus 13,128 Newark hours as context.
+\end{itemize}
+ 
+\textbf{Meteostat hourly observations.} Four stations return 52,047 rows against
+a complete grid of 52,512 site-hours, near-complete at the airports (two missing
+hours each) but sparse at Central Park (459 missing).
+\begin{itemize}
+  \item Drop the \texttt{coco} condition code, 93--97\% null by station and
+        fog-only among survivors. Impute \texttt{prcp} from a neighbouring
+        station, or dry where none reported, affecting 1,527 airport-hours
+        (5.8\%); these and four hours carried forward across the spring-forward
+        gap are the only imputations in the pipeline.
+  \item Derive \texttt{is\_freezing} from $\texttt{prcp} > 0$ and
+        $\texttt{temp} \le 0^\circ$C, flagging 0.32\% of hours. Snow is not used,
+        as the window coincides with a record snow drought.
+\end{itemize}
+ 
+\textbf{Join.} All sources are left-joined onto the 26,256-row spine with row
+counts asserted after every join, so any silent fan-out is caught where it
+occurs. The table grows from 20 columns to 31 with JFK and LGA flights, 36 with
+Newark context, 47 with weather and 49 with holiday flags.
+ 
+\section{Analysis and Geospatial Visualisation}
+\label{sec:analysis}
+ 
+Every distribution below is computed over the full cleaned table, as percentiles
+and outlier fences are exactly the quantities a sample would distort; only the
+scatter in (Figure \ref{fig:fare}b) is subsampled, at 1\%, as 4.65M points render
+as a solid block. No trip-level value is imputed anywhere: the weather fills of
+Section 2 touch 5.8\% of airport-hours and none of the response.
+ 
+\begin{figure}[htb]
+\centering
+\includegraphics[width=0.84\textwidth]{fig01_fare_distribution.png}
+\caption{Metered fare distribution, citywide against airport pickups. The JFK
+mass point at \$70.00 is the published flat fare to Manhattan.}
+\label{fig:fare}
+\end{figure}
+ 
+From (Figure \ref{fig:fare}) the airport fare distribution is not a shifted copy
+of the citywide one but a different shape: JFK is bimodal, with 1,492,107 pickups
+(54.2\% of JFK trips) billing exactly \$70.00, whereas LGA is unimodal and
+metered. A mean fare at JFK is therefore a mixing weight between two regimes
+rather than a central tendency, which is why Model 2 is given a learner that can
+represent a mixture.
+Applying Tukey's fence \cite{tukey} to the full distribution, 66,018 airport
+trips (1.42\%) exceed the \$114.85 upper bound; profiling by rate code shows
+50.95\% are the Nassau or Westchester out-of-city rate and 22.26\% negotiated
+fares, both documented regimes \cite{tlc_dict}, so these records are extreme
+rather than invalid and are retained. One record carries 67.1\% of the variance
+of citywide \texttt{fare\_amount}, so quartiles rather than standard deviations
+are quoted throughout.
+ 
+The target needs the same scrutiny before a family is chosen. Of the 26,256
+airport-hours, 1,180 record no pickups at all, split 1,133 LGA against 47 JFK, so
+LGA closes overnight while JFK merely thins. The variance-to-mean ratio computed
+\emph{within} (airport, hour-of-day) cells exceeds one in all 48 cells, at medians
+of 12.44 for JFK and 21.40 for LGA; the conditional test is the relevant one, as
+an unconditional figure would mostly measure the gap between 03:00 and 18:00.
+That overdispersion survives conditioning is what makes the negative binomial
+comparison in Section \ref{sec:results} a genuine question rather than a
+formality. Volume and value are also coupled unequally: across the 168 (day,
+hour) cells the Spearman correlation between mean pickups and mean fare is
+$+0.771$ at JFK but only $+0.536$ at LGA, so LaGuardia has hours that pay near
+the top of its range on a short queue --- a gap Section \ref{sec:recs} turns into
+a shift plan.
+ 
+\begin{figure}[htb]
+\centering
+\includegraphics[width=0.84\textwidth]{fig04_flights_to_pickups.png}
+\caption{Correlation between hourly pickups and scheduled arrivals at lags of
+$-2$ to $+2$ hours, and domestic-arrival coverage by hour of day.}
+\label{fig:flights}
+\end{figure}
+ 
+From (Figure \ref{fig:flights}) the correlation between pickups and scheduled
+arrivals peaks at a one-hour lag at both airports, 0.717 at JFK and 0.842 at LGA,
+falling away either side; this justifies carrying
+\texttt{sched\_arrivals\_prev\_hr} into the feature set, as an arriving passenger
+clears the terminal before reaching the rank. The gap between the airports is a
+coverage artefact rather than a behavioural one: JFK converts 14.25 pickups per
+domestic arrival against LGA's 7.80, but 38.5\% of JFK's scheduled domestic
+arrivals are long-haul against 3.4\% at LGA, and BTS reports domestic carriers
+only. The flight feed therefore sees most of LaGuardia and roughly two thirds of
+JFK, which caps how well any schedule signal can do at JFK.
+ 
+Weather is the clearest negative result. Matched within (airport, hour-of-day)
+cells, wet hours carry 7.0\% fewer pickups at LGA (paired $t = -2.39$,
+$p = 0.025$) and no significant change at JFK, so rain does not raise airport
+demand as the introduction supposed; the walk-up alternatives that rain
+suppresses in Manhattan barely exist at a rank where the queue is already the
+default.
+ 
+% Cropped in LaTeX, not re-plotted. The 2x2 grid has an all-white gutter whose
+% midpoint sits at exactly 50% of the image height, so trimming the bottom half
+% keeps panels (a) and (b) and discards the mean-fare map and the unreferenced
+% "Night minus day" panel. The trim is given in absolute big points because
+% \height is not defined inside graphicx's trim key: the image is 1425px at
+% 300dpi = 342bp tall, so half is 171bp.
+% Width 0.62: the panels carry large filled polygons rather than fine tick
+% labels, so this is the figure that gives up the most page for the least.
+\begin{figure}[htb]
+\centering
+\includegraphics[trim={0 171bp 0 0}, clip,
+                 width=0.62\textwidth]{fig06_dropoff_geography.png}
+\caption{Share of each airport's drop-offs by taxi zone, on a log scale. A
+further 3.16\% of airport trips end in zones 264/265, which have no geometry and
+are not mapped.}
+\label{fig:geo}
+\end{figure}
+ 
+Pickups occur in exactly two zones, so the informative map is of where airport
+trips end. From (Figure \ref{fig:geo}) the 4,653,181 airport pickups disperse
+across 261 drop-off zones, 60.81\% terminating in Manhattan at a mean of \$82.48
+against 18.00\% in Queens at \$46.72. The two panels are near-indistinguishable,
+which is itself the finding: destination mix is a property of the city rather
+than of the airport, so a driver gains nothing by choosing a rank on where its
+passengers are headed.
+ 
+What the map conceals is that fare is only half of what an hour is worth. Times
+Sq/Theatre District is the largest single destination at 5.38\% and pays \$86.28,
+but the run takes 49.7 minutes and returns only \$104.16 per engaged hour,
+against Murray Hill's \$136.12 on \$82.03 over 36.2 minutes. Hail rate is a
+second and separate axis: Times Square supplies 144.3 citywide pickups an hour
+against 69.7 in the Garment District, so how fast this trip ends and where the
+next one begins are different questions, and Section \ref{sec:recs} needs both.
+ 
+\section{Modelling}
+\label{sec:modelling}
+ 
+Expected revenue in an airport-hour is decomposed into two questions a driver
+asks separately, as how many fares are waiting and what each is worth are
+governed by different mechanisms:
+\begin{equation}
+\widehat{R}_{a,h} = \widehat{N}_{a,h} \times \widehat{F}_{a,h},
+\label{eq:product}
+\end{equation}
+where $\widehat{N}_{a,h}$ is a Poisson prediction of pickup count and
+$\widehat{F}_{a,h}$ a gradient-boosted prediction of mean fare per trip.
+
+Both models train on 2023 and test on January to June 2024, a strictly forward
+split, as any recommendation to a driver must be built only from information
+available before the shift begins. Of the 26,256 airport-hours, 342 are excluded
+upstream (six daylight-saving anomalies, 336 lacking a full weekly lag), leaving
+17,180 training and 8,734 test rows; Model 2 is defined only where at least one
+trip occurred, so it sees 16,375 and 8,375. A roles manifest bars 23 columns so
+that no same-hour outcome reaches either feature list, standardisation is fitted
+on the training split alone, and \texttt{arrival\_slippage\_lag\_1h} is dropped as
+an exact linear combination of two retained features. Everything below is
+reported beside a seasonal-naive benchmark \cite{hyndman} predicting each hour
+with the same hour one week earlier, as a model that cannot beat last Tuesday
+adds nothing a driver does not already have. Hour enters as 23 dummies interacted with airport rather than as a continuous term, as demand is not monotone, and are likely categorical.
+ 
+\textbf{Model 1: a Poisson GLM for demand.} The response is a non-negative
+integer count with a hard floor at zero, so a Poisson GLM with a log link is the
+natural specification \cite{mccullagh}, and its multiplicative coefficients read
+directly as the proportional effect of an extra scheduled arrival. The design
+matrix is of full rank 98, so every coefficient is identified; the Pearson
+dispersion, however, is 10.48 rather than the assumed 1, consistent with Section
+\ref{sec:analysis}, so a quasi-Poisson scale \cite{wedderburn} is applied,
+inflating the standard errors 3.24 times, and no coefficient is interpreted
+without it. Overdispersion of that size invites a negative binomial alternative,
+which assumes a different variance shape rather than merely rescaling the errors;
+it is fitted on the same design, so the two count models differ in exactly one
+assumption.
+ 
+\textbf{Model 2: gradient-boosted trees for the fare.} A contrasting family is
+used deliberately rather than a second GLM. The fare at an airport-hour is a
+mixture of flat-rate and metered trips, as Section \ref{sec:analysis}
+established, so its conditional mean is a non-linear function that a tree
+ensemble can capture without the interactions being specified in advance
+\cite{friedman, sklearn}. Hyperparameters are tuned on a forward validation
+split, training to 30 September 2023 and validating on the final quarter, so the
+configuration is chosen by a candidate with no holiday history; the shortfall is
+identical across the grid, so the ranking holds and the refit uses the whole year.
+ 
+\section{Results and Discussion}
+\label{sec:results}
+ 
+\begin{table}[htb]
+\centering
+\footnotesize
+\begin{tabular}{llrrr}
+\toprule
+Target & Model & $n$ & RMSE & MAE \\
+\midrule
+Pickups per hour    & Seasonal naive (benchmark)  & 8,734 & 52.84 & 36.08 \\
+                    & Poisson GLM                 & 8,734 & \textbf{40.64} & \textbf{28.89} \\
+                    & Negative binomial GLM       & 8,734 & 44.09 & 30.93 \\
+\addlinespace
+Mean fare (US\$)    & Seasonal naive (benchmark)  & 8,198 & 10.13 & 5.18 \\
+                    & Boosted trees               & 8,198 & \textbf{7.11} & \textbf{3.77} \\
+                    & Boosted trees, full support & 8,375 & 8.43 & 4.13 \\
+\addlinespace
+Revenue (US\$/hour) & Benchmark product           & 8,734 & 4,175 & 2,834 \\
+                    & Model 1 $\times$ Model 2    & 8,734 & \textbf{3,230} & \textbf{2,255} \\
+\bottomrule
+\end{tabular}
+\caption{Test-period losses, January to June 2024. Rows compare only within a
+target and at equal $n$: the value benchmark is undefined in the 177 hours whose
+counterpart last week was empty. The count models are also compared on mean
+Poisson deviance, 10.021 against 10.885 in the Poisson's favour, since squared
+error alone favours the Poisson by construction.}
+\label{tab:results}
+\end{table}
+ 
+In sample the negative binomial wins decisively on AIC, 182,996 against 280,978,
+but the verdict reverses out of sample, where it is worse on all three losses in
+(Table \ref{tab:results}). The in-sample criterion rewards a dispersion parameter
+fitted to 2023, whereas the test period asks whether that flexibility generalises;
+it does not, the Poisson is retained, and both beat the benchmark.
+ 
+For the fare model the improvement on common support is 29.8\% in RMSE. The
+benchmark cannot score 177 hours at all, as their counterpart last week was
+empty, and Model 2 scores those at \$32.02; excluding them would flatter the
+comparison, so the honest figure is the \$8.43 over full support.
+ 
+% Not cropped: panel (a)'s plot area overlaps where panel (b)'s tick labels
+% begin, so no clean vertical cut exists.
+\begin{figure}[htb]
+\centering
+\includegraphics[width=0.80\textwidth]{fig09_model_interpretation.png}
+\caption{Model 1 fitted demand across a midweek June day, and Model 2
+permutation importance in dollars of test RMSE added when a feature is shuffled.}
+\label{fig:interp}
+\end{figure}
+ 
+Permutation importance produces the most consequential negative result (Figure
+\ref{fig:interp}). The fare model is dominated by its own history, with
+\texttt{mean\_total\_same\_hour\_7d} contributing \$1.257 of RMSE against \$0.095
+for the three collinear flight columns shuffled jointly. Flight schedules predict
+how many passengers will want a taxi but almost nothing about what each trip will
+be worth, as the schedule sets arrival volume while fare is set by destination;
+the external dataset earns its place through Model 1 rather than Model 2.
+ 
+Model 1's rate ratios say what that place is. A further standard deviation of the
+current hour's scheduled arrivals multiplies expected pickups by 1.193 (95\% CI
+1.164--1.224), and of realised arrivals in the previous hour by 1.150
+(1.137--1.164). The lagged schedule term itself reads 0.918 (0.869--0.969),
+against the positive correlation of Section \ref{sec:analysis}; this is
+collinearity rather than contradiction, as without the slippage difference
+\texttt{sched\_arrivals\_prev\_hr} and \texttt{actual\_arrivals\_lag\_1h} are near
+duplicates and the fit splits one effect between them, the realised count
+absorbing it. The informative coefficient is \texttt{share\_delayed\_15\_lag\_1h}
+at 1.055 (1.048--1.061); holding arrival volume fixed, an hour in which more
+flights ran late is followed by \emph{more} pickups, not fewer. Delay displaces
+demand forward rather than destroying it, which is the opposite of what a driver
+watching a departures board would infer.
+ 
+Model 1 under-predicts by 6.8 pickups per hour, with 71\% of the 48 airport-hour
+cells sharing that sign, and its structure matters more than its magnitude. It is
+not a year-on-year level effect, as demand fell 9.8\% at JFK and 3.9\% at LGA
+between matched months while the residuals point the other way, nor monotone in
+the level: it peaks in the seventh decile at +20.4 pickups and falls to near zero
+at both extremes, so the model is conservative in the moderately busy middle
+where a shift is mostly spent. The bias also decays across the horizon, from
++13.7 pickups in the first test month to +0.2 in the sixth; this is a handover
+effect rather than a standing property, as the weekly lags entering January still
+point back at the holiday lull and progressively stop doing so, which makes the
+caveat time-limited.
+ 
+Multiplying two predictions is legitimate only if their errors are close to
+independent, as any residual covariance is a term Equation \ref{eq:product}
+omits. That term is \$24 per airport-hour against a mean observed revenue of
+\$12,986, or 0.2\% of level, so the product is sound. Over the test period the
+combination improves on the benchmark product by 22.6\% and totals \$107.5M
+predicted against \$113.4M observed; that 5.2\% shortfall is the early-horizon
+conservatism above rather than a defect of the combination. Refitting Model 2
+with hours weighted by pickup count moved combined RMSE by 0.2\%, so the
+unweighted fit is retained.
+ 
+\section{Recommendations}
+\label{sec:recs}
+ 
+\begin{figure}[htb]
+\centering
+\includegraphics[width=0.84\textwidth]{fig10_expected_revenue.png}
+\caption{Predicted expected revenue per airport-hour across an ordinary June
+midweek day, JFK against LGA, with observed values overlaid.}
+\label{fig:revenue}
+\end{figure}
+ 
+\textbf{Read the hour behind you, and treat a bank of delays as a reason to
+stay.} The instinct when the board fills with delays is that the rank has gone
+dead, so a driver leaves for the city. The model says otherwise: with arrival
+volume held fixed, a standard deviation more of
+\texttt{share\_delayed\_15\_lag\_1h} multiplies the next hour's pickups by 1.055,
+realised arrivals in the previous hour carry a rate ratio above one, and (Figure
+\ref{fig:flights}) puts the peak correlation at a one-hour lag. Delays move
+passengers later; they do not remove them. The operational form needs nothing but
+a phone: read the previous hour's landings rather than the current hour's
+schedule, and discount a thin next hour if the hour behind it ran late. The
+qualification is seasonal, as Section \ref{sec:results}'s early-horizon bias is
+concentrated in January, so the rule should be trusted least in the first weeks
+of a year and the model refitted monthly.
+ 
+\textbf{Start a weekday at LaGuardia and move to JFK after midday.} JFK is larger
+and pays more, so the default is to work it all day, and for most of the clock
+that is right: predicted revenue peaks at JFK 16:00 at \$28,214 per hour (the amount the fleet earned collectively), and the
+five best JFK hours fall between 15:00 and 22:00 at fares near \$85. The
+exception is narrow but repeatable: from (Figure \ref{fig:revenue}) LGA out-earns
+JFK in 19 of the 168 day-hour cells, concentrated at 09:00 to 11:00 on weekdays
+and peaking on Wednesday at 10:00 with an advantage of \$6,668 per hour (the amount that the fleet earned collectively). Section
+\ref{sec:analysis} explains why this stays invisible: LaGuardia couples volume to
+value at only $+0.536$ against JFK's $+0.771$, so those cells pay near the top of
+the range on a short queue, and a driver judging by queue length reads them as
+quiet. The advantage is strictly midweek. For a Queens-based driver the plan is a
+weekday start at LGA through the morning bank and a move to JFK from midday; for
+one already at JFK it is a reason not to rejoin the lot at 09:00.
+ 
+\textbf{Judge the drop-off by the hour it returns and the hail rate it lands in,
+not by the fare.} A driver has no control over the destination but does control
+what follows it, and Section \ref{sec:analysis} shows that the two quantities
+decides how fast the trip ends, and how easily the next one starts. Upper East Side North and
+Midtown East return \$139.22 and \$127.60 per engaged hour into zones supplying
+184.7 and 153.1 citywide pickups an hour, so after either the street is the right
+follow-up and a return to the rank wastes the trip back. Times Square is the
+opposite case on the higher fare, at \$104.16 per engaged hour, and the Garment
+District worse again on hail rate at 69.7 an hour; after those, (Figure
+\ref{fig:revenue}) decides whether the return leg pays at that hour --- which,
+for a Garment District drop between 15:00 and 22:00, it does. Ranking the four or
+five zones a driver actually works is a one-off exercise.
+ 
+\section{Conclusion}
+ 
+% \looseness asks TeX to set this paragraph one line shorter by tightening
+% inter-word spacing within its normal tolerance. No content is lost and no
+% length is redefined.
+{\looseness=-1
+Published flight schedules predict airport taxi demand, but only demand: Model 1
+beats a seasonal-naive benchmark by 23.1\% and the combination by 22.6\% on
+revenue, while arrival data says almost nothing about fare, which is set by
+destination. The value lies where the schedule contradicts intuition: delays
+defer demand rather than destroy it, and a midweek LaGuardia morning out-earns
+JFK. Both are actionable from a phone at the rank.\par}
+ 
+\printbibliography
+ 
+\end{document}
